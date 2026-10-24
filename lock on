@@ -1,0 +1,343 @@
+-- Roblox LocalScript: Optimized Lock-On Menu & System
+-- Place in StarterPlayerScripts or run via your executor
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local LOCAL_PLAYER = Players.LocalPlayer
+local PLAYER_GUI = LOCAL_PLAYER:WaitForChild("PlayerGui")
+local camera = workspace.CurrentCamera
+
+-- Settings & States
+local settings = {
+    Enabled = false,
+    Sensitivity = 1.0, -- Scalable from 0 up to 2.0 (Max instant)
+    MaxDistance = 100, -- Strict proximity range limit
+    MinDistance = 1.5  -- Minimum distance buffer set to 1.5 studs
+}
+
+local lockedTargetPart = nil
+local activeGyro = nil
+
+-- Clean up existing UI if re-executed
+local oldGui = PLAYER_GUI:FindFirstChild("LockOnMenuGui")
+if oldGui then
+    oldGui:Destroy()
+end
+
+-- Create ScreenGui styled with professional panel aesthetics
+local gui = Instance.new("ScreenGui")
+gui.Name = "LockOnMenuGui"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = PLAYER_GUI
+
+-- Main Panel Frame
+local panel = Instance.new("Frame")
+panel.Name = "Panel"
+panel.AnchorPoint = Vector2.new(0, 0)
+panel.Position = UDim2.new(0.05, 0, 0.25, 0)
+panel.Size = UDim2.fromOffset(260, 220)
+panel.BackgroundColor3 = Color3.fromRGB(22, 27, 36)
+panel.BorderSizePixel = 0
+panel.Active = true
+panel.Draggable = true
+panel.Parent = gui
+
+local panelCorner = Instance.new("UICorner")
+panelCorner.CornerRadius = UDim.new(0, 12)
+panelCorner.Parent = panel
+
+local panelStroke = Instance.new("UIStroke")
+panelStroke.Color = Color3.fromRGB(78, 95, 122)
+panelStroke.Thickness = 1
+panelStroke.Parent = panel
+
+-- Title Label
+local title = Instance.new("TextLabel")
+title.Position = UDim2.fromOffset(14, 12)
+title.Size = UDim2.new(1, -28, 0, 25)
+title.BackgroundTransparency = 1
+title.Text = "LOCK-ON MENU"
+title.TextColor3 = Color3.fromRGB(235, 240, 250)
+title.TextSize = 13
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = panel
+
+-- Clickable On/Off Toggle Button
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Position = UDim2.fromOffset(14, 48)
+toggleBtn.Size = UDim2.new(1, -28, 0, 38)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 70, 50)
+toggleBtn.BorderSizePixel = 0
+toggleBtn.Text = "Lock-On: OFF"
+toggleBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+toggleBtn.TextSize = 12
+toggleBtn.Font = Enum.Font.GothamSemibold
+toggleBtn.Parent = panel
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 8)
+toggleCorner.Parent = toggleBtn
+
+-- Sensitivity Label
+local sensLabel = Instance.new("TextLabel")
+sensLabel.Position = UDim2.fromOffset(14, 96)
+sensLabel.Size = UDim2.new(1, -28, 0, 20)
+sensLabel.BackgroundTransparency = 1
+sensLabel.Text = "Sensitivity: 1.0 (Max: 2.0)"
+sensLabel.TextColor3 = Color3.fromRGB(165, 177, 197)
+sensLabel.TextSize = 11
+sensLabel.Font = Enum.Font.Gotham
+sensLabel.TextXAlignment = Enum.TextXAlignment.Left
+sensLabel.Parent = panel
+
+-- Sensitivity Slider Track
+local sliderTrack = Instance.new("Frame")
+sliderTrack.Position = UDim2.fromOffset(14, 122)
+sliderTrack.Size = UDim2.new(1, -28, 0, 16)
+sliderTrack.BackgroundColor3 = Color3.fromRGB(35, 43, 56)
+sliderTrack.BorderSizePixel = 0
+sliderTrack.Parent = panel
+
+local trackCorner = Instance.new("UICorner")
+trackCorner.CornerRadius = UDim.new(0, 8)
+trackCorner.Parent = sliderTrack
+
+local sliderFill = Instance.new("Frame")
+sliderFill.Size = UDim2.new(settings.Sensitivity / 2.0, 0, 1, 0)
+sliderFill.BackgroundColor3 = Color3.fromRGB(65, 105, 191)
+sliderFill.BorderSizePixel = 0
+sliderFill.Parent = sliderTrack
+
+local fillCorner = Instance.new("UICorner")
+fillCorner.CornerRadius = UDim.new(0, 8)
+fillCorner.Parent = sliderFill
+
+-- Status Label
+local status = Instance.new("TextLabel")
+status.Position = UDim2.fromOffset(14, 155)
+status.Size = UDim2.new(1, -28, 0, 30)
+status.BackgroundTransparency = 1
+status.Text = "Status: Ready"
+status.TextColor3 = Color3.fromRGB(120, 220, 170)
+status.TextSize = 11
+status.Font = Enum.Font.Gotham
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Parent = panel
+
+-- Cleanup function to reset character state
+local function cleanupLock()
+    lockedTargetPart = nil
+
+    if activeGyro then
+        activeGyro:Destroy()
+        activeGyro = nil
+    end
+
+    if LOCAL_PLAYER.Character and LOCAL_PLAYER.Character:FindFirstChildOfClass("Humanoid") then
+        LOCAL_PLAYER.Character:FindFirstChildOfClass("Humanoid").AutoRotate = true
+    end
+end
+
+-- Slider Drag Logic (Supports Mouse & Touch)
+local draggingSlider = false
+
+local function updateSlider(input)
+    local posRel = math.clamp(
+        (input.Position.X - sliderTrack.AbsolutePosition.X) / sliderTrack.AbsoluteSize.X,
+        0,
+        1
+    )
+
+    sliderFill.Size = UDim2.new(posRel, 0, 1, 0)
+    settings.Sensitivity = math.round((posRel * 2.0) * 100) / 100
+    sensLabel.Text = "Sensitivity: " .. tostring(settings.Sensitivity) .. " (Max: 2.0)"
+
+    -- Update gyro power immediately when slider changes (optimized)
+    if activeGyro then
+        activeGyro.P = 25000 + (settings.Sensitivity / 2.0) * 125000
+    end
+end
+
+sliderTrack.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingSlider = true
+        updateSlider(input)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingSlider = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if draggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        updateSlider(input)
+    end
+end)
+
+-- Function to acquire the closest target within MaxDistance
+local function acquireClosestTarget()
+    local bestTarget = nil
+    local myChar = LOCAL_PLAYER.Character
+
+    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then
+        return nil
+    end
+
+    local myRootPos = myChar.HumanoidRootPart.Position
+    local shortestDistance = settings.MaxDistance
+
+    for _, v in ipairs(Players:GetPlayers()) do
+        if v ~= LOCAL_PLAYER and v.Character then
+            local rootPart = v.Character:FindFirstChild("HumanoidRootPart") or v.Character.PrimaryPart
+            local humanoid = v.Character:FindFirstChildOfClass("Humanoid")
+
+            if rootPart and humanoid and humanoid.Health > 0 then
+                local distance = (rootPart.Position - myRootPos).Magnitude
+
+                if distance < shortestDistance then
+                    shortestDistance = distance
+                    bestTarget = rootPart
+                end
+            end
+        end
+    end
+
+    return bestTarget
+end
+
+-- Clickable Toggle Button Activation Logic
+toggleBtn.Activated:Connect(function()
+    settings.Enabled = not settings.Enabled
+
+    if settings.Enabled then
+        lockedTargetPart = acquireClosestTarget()
+
+        if lockedTargetPart then
+            toggleBtn.Text = "Lock-On: ON"
+            toggleBtn.TextColor3 = Color3.fromRGB(120, 255, 170)
+            toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 70, 50)
+            status.Text = "Status: Locked"
+        else
+            settings.Enabled = false
+            toggleBtn.Text = "Lock-On: OFF"
+            status.Text = "Status: No target nearby"
+        end
+    else
+        toggleBtn.Text = "Lock-On: OFF"
+        toggleBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+        toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 70, 50)
+        status.Text = "Status: Unlocked"
+        cleanupLock()
+    end
+end)
+
+-- Handle Character Death / Respawn UI sync
+LOCAL_PLAYER.CharacterAdded:Connect(function(char)
+    settings.Enabled = false
+    toggleBtn.Text = "Lock-On: OFF"
+    toggleBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 70, 50)
+    status.Text = "Status: Ready"
+    cleanupLock()
+end)
+
+-- Performance-Optimized Tracking Loop
+RunService.RenderStepped:Connect(function(dt)
+    if not settings.Enabled or not lockedTargetPart then
+        return
+    end
+
+    local myChar = LOCAL_PLAYER.Character
+
+    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") or not myChar:FindFirstChildOfClass("Humanoid") then
+        cleanupLock()
+        return
+    end
+
+    local myRoot = myChar.HumanoidRootPart
+    local humanoid = myChar:FindFirstChildOfClass("Humanoid")
+
+    if humanoid.Health <= 0 or not lockedTargetPart.Parent or not lockedTargetPart.Parent:FindFirstChildOfClass("Humanoid") or lockedTargetPart.Parent:FindFirstChildOfClass("Humanoid").Health <= 0 then
+        settings.Enabled = false
+        toggleBtn.Text = "Lock-On: OFF"
+        toggleBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+        toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        status.Text = "Status: Target lost"
+        cleanupLock()
+        return
+    end
+
+    humanoid.AutoRotate = false
+
+    if not activeGyro or activeGyro.Parent ~= myRoot then
+        if activeGyro then
+            activeGyro:Destroy()
+        end
+
+        activeGyro = Instance.new("BodyGyro")
+        activeGyro.Name = "LockOnGyro"
+        activeGyro.MaxTorque = Vector3.new(0, math.huge, 0)
+        -- Set initial power based on sensitivity
+        activeGyro.P = 25000 + (settings.Sensitivity / 2.0) * 125000
+        activeGyro.Parent = myRoot
+    end
+
+    local targetPos = lockedTargetPart.Position + Vector3.new(0, 0.5, 0)
+    local horizontalTargetPos = Vector3.new(
+        targetPos.X,
+        myRoot.Position.Y,
+        targetPos.Z
+    )
+
+    -- Minimum-distance buffer check (1.5 studs)
+    local currentDist = (myRoot.Position - horizontalTargetPos).Magnitude
+
+    if currentDist < settings.MinDistance then
+        local pushDirection = (myRoot.Position - horizontalTargetPos).Unit
+        local safePos = horizontalTargetPos + (pushDirection * settings.MinDistance)
+
+        myRoot.AssemblyLinearVelocity = Vector3.new(
+            0,
+            myRoot.AssemblyLinearVelocity.Y,
+            0
+        )
+
+        myRoot.CFrame = CFrame.new(
+            Vector3.new(safePos.X, myRoot.Position.Y, safePos.Z),
+            horizontalTargetPos
+        )
+    end
+
+    -- Character Body Rotation
+    activeGyro.CFrame = CFrame.new(myRoot.Position, horizontalTargetPos)
+
+    -- Centered POV Camera Framing
+    local myPos = myRoot.Position + Vector3.new(0, 2.5, 0)
+    local directionToTarget = (targetPos - myPos).Unit
+    local zoomDistance = (camera.CFrame.Position - myRoot.Position).Magnitude
+
+    if zoomDistance < 3 then
+        zoomDistance = 10
+    end
+
+    local centeredCamPos = myPos - (directionToTarget * zoomDistance)
+    local targetCamCFrame = CFrame.new(centeredCamPos, targetPos)
+
+    if settings.Sensitivity >= 2.0 then
+        camera.CFrame = targetCamCFrame
+    else
+        local alpha = math.clamp(
+            (settings.Sensitivity / 2.0) * (dt * 60),
+            0.01,
+            1
+        )
+
+        camera.CFrame = camera.CFrame:Lerp(targetCamCFrame, alpha)
+    end
+end)
